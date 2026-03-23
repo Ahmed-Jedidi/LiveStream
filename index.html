@@ -1,0 +1,547 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enterprise Story Streamer</title>
+    <style>
+        /* * ARCHITECTURAL CSS MANDATES:
+         * 1. 100vh/100vw locking to prevent scroll jank.
+         * 2. `object-fit: cover` ensures strict aspect ratio adherence without distortion.
+         * 3. GPU compositing triggers (`will-change`, `transform`) on high-frequency update nodes.
+         */
+        
+        :root {
+            --story-aspect-ratio: 9 / 16;
+            --desktop-max-height: 95vh;
+            --ui-z-index: 100;
+        }
+
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: #000;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            user-select: none;
+        }
+
+        /* Full viewport container */
+        #app-container {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* * DYNAMIC BLURRED BACKGROUND
+         * We scale it slightly (1.1) to prevent the blurred edges from leaking transparent pixels.
+         */
+        #bg-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            filter: blur(40px) brightness(0.3);
+            transform: scale(1.1);
+            z-index: 1;
+            pointer-events: none;
+        }
+
+        #bg-container video, 
+        #bg-container img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            position: absolute;
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        /* CENTRAL MEDIA CONTAINER (9:16) */
+        #story-container {
+            position: relative;
+            height: var(--desktop-max-height);
+            aspect-ratio: var(--story-aspect-ratio);
+            background: #111;
+            border-radius: 12px;
+            overflow: hidden;
+            z-index: 10;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+        }
+
+        /* Holds the active/preloaded DOM nodes */
+        #media-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+        }
+
+        #media-layer video, 
+        #media-layer img {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0; /* Handled via JS */
+        }
+
+        /* PROGRESS BAR SYSTEM */
+        #progress-ui {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            padding: 12px 8px;
+            box-sizing: border-box;
+            display: flex;
+            gap: 4px;
+            z-index: var(--ui-z-index);
+            background: linear-gradient(to bottom, rgba(0,0,0,0.6) 0%, transparent 100%);
+            transition: opacity 0.3s ease; /* Added for menu toggling */
+        }
+
+        .progress-segment {
+            flex-grow: 1;
+            height: 3px;
+            background-color: rgba(255, 255, 255, 0.3);
+            border-radius: 2px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* * GPU-ACCELERATED PROGRESS FILL
+         * Mandate: Animate using transform: scaleX(), NOT width. 
+         * Origin is left-center so it grows left-to-right.
+         */
+        .progress-fill {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: #fff;
+            transform-origin: left center;
+            transform: scaleX(0);
+            will-change: transform;
+        }
+
+        /* INTERACTION & UI OVERLAYS */
+        #controls-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            z-index: var(--ui-z-index);
+            display: flex;
+        }
+
+        .click-zone {
+            flex-grow: 1;
+            height: 100%;
+            cursor: pointer;
+        }
+
+        /* MUTE / UNMUTE BUTTON */
+        #mute-btn {
+            position: absolute;
+            top: 40px;
+            right: 16px;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            border: 1px solid rgba(255,255,255,0.2);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            backdrop-filter: blur(10px);
+            z-index: calc(var(--ui-z-index) + 1);
+            animation: pulse 2s infinite;
+            transition: opacity 0.3s ease; /* Added for menu toggling */
+        }
+
+        #mute-btn.hidden {
+            display: none;
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(255, 255, 255, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
+        }
+
+        /* PAUSE INDICATOR */
+        #pause-indicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 48px;
+            opacity: 0;
+            transition: opacity 0.2s;
+            pointer-events: none;
+            text-shadow: 0 2px 10px rgba(0,0,0,0.5);
+        }
+        #pause-indicator.visible {
+            opacity: 1;
+        }
+
+    </style>
+</head>
+<body>
+
+<div id="app-container">
+    <div id="bg-container"></div>
+
+    <div id="story-container">
+        <div id="progress-ui"></div>
+        
+        <div id="media-layer"></div>
+        
+        <div id="controls-layer">
+            <div class="click-zone" id="zone-prev"></div>
+            <div class="click-zone" id="zone-next"></div>
+        </div>
+
+        <button id="mute-btn">Tap to Unmute</button>
+        <div id="pause-indicator">⏸</div>
+    </div>
+</div>
+
+<script>
+/**
+ * ENTERPRISE STORY STREAMER - CORE LOGIC
+ * Architecture: Vanilla JS, High-Perf Rendering, VRAM Management.
+ */
+
+const MASTER_FEED = [
+  { type: "video", src: "https://www.w3schools.com/html/mov_bbb.mp4", duration: 10 },
+  { type: "image", src: "https://www.w3schools.com/w3images/fjords.jpg", duration: 5 },
+  { type: "video", src: "https://www.w3schools.com/html/movie.mp4", duration: 12 },
+  { type: "image", src: "https://www.w3schools.com/w3images/lights.jpg", duration: 5 }
+];
+
+const IMAGE_DURATION_MS = 5000;
+
+// Application State
+const state = {
+    currentIndex: 0,
+    isPaused: false,
+    globalMuted: true,
+    volume: 1.0,        // NEW: Volume tracking
+    uiVisible: true,    // NEW: UI/Menu visibility tracking
+    feedLength: MASTER_FEED.length,
+    
+    // RAF Loop Tracking
+    rafId: null,
+    imageStartTime: 0,
+    imageRemainingTime: IMAGE_DURATION_MS,
+    
+    // Virtualized DOM References
+    activeMedia: { fg: null, bg: null },
+    preloadMedia: { fg: null, bg: null },
+    
+    // UI References
+    progressFills: []
+};
+
+// DOM Node Caching
+const dom = {
+    bgLayer: document.getElementById('bg-container'),
+    mediaLayer: document.getElementById('media-layer'),
+    progressUi: document.getElementById('progress-ui'),
+    muteBtn: document.getElementById('mute-btn'),
+    pauseIndicator: document.getElementById('pause-indicator'),
+    zonePrev: document.getElementById('zone-prev'),
+    zoneNext: document.getElementById('zone-next')
+};
+
+function nuclearGC(element) {
+    if (!element) return;
+    if (element.tagName === 'VIDEO') {
+        element.pause();
+        element.removeAttribute('src');
+        element.load();
+    }
+    element.remove();
+}
+
+function createMediaNode(item, isBackground = false) {
+    const el = document.createElement(item.type === 'video' ? 'video' : 'img');
+    el.src = item.src;
+    el.style.opacity = '0';
+    
+    if (item.type === 'video') {
+        el.muted = true;
+        el.loop = false;
+        el.playsInline = true;
+        el.preload = "auto"; 
+    }
+    
+    if (isBackground) {
+        dom.bgLayer.appendChild(el);
+    } else {
+        dom.mediaLayer.appendChild(el);
+    }
+    
+    return el;
+}
+
+function initProgressUI() {
+    dom.progressUi.innerHTML = '';
+    state.progressFills = [];
+    
+    for (let i = 0; i < state.feedLength; i++) {
+        const segment = document.createElement('div');
+        segment.className = 'progress-segment';
+        const fill = document.createElement('div');
+        fill.className = 'progress-fill';
+        segment.appendChild(fill);
+        dom.progressUi.appendChild(segment);
+        state.progressFills.push(fill);
+    }
+}
+
+function preloadNext() {
+    const nextIndex = (state.currentIndex + 1) % state.feedLength;
+    const nextItem = MASTER_FEED[nextIndex];
+
+    nuclearGC(state.preloadMedia.fg);
+    nuclearGC(state.preloadMedia.bg);
+
+    state.preloadMedia.fg = createMediaNode(nextItem, false);
+    state.preloadMedia.bg = createMediaNode(nextItem, true);
+}
+
+function mountActiveMedia() {
+    nuclearGC(state.activeMedia.fg);
+    nuclearGC(state.activeMedia.bg);
+
+    const item = MASTER_FEED[state.currentIndex];
+
+    if (state.preloadMedia.fg && state.preloadMedia.fg.src === item.src) {
+        state.activeMedia.fg = state.preloadMedia.fg;
+        state.activeMedia.bg = state.preloadMedia.bg;
+        state.preloadMedia.fg = null; 
+        state.preloadMedia.bg = null;
+    } else {
+        state.activeMedia.fg = createMediaNode(item, false);
+        state.activeMedia.bg = createMediaNode(item, true);
+    }
+
+    if (item.type === 'video') {
+        state.activeMedia.fg.muted = state.globalMuted;
+        state.activeMedia.fg.volume = state.volume; // NEW: Apply current volume state
+        state.activeMedia.bg.muted = true;
+    }
+
+    state.activeMedia.fg.style.opacity = '1';
+    state.activeMedia.bg.style.opacity = '1';
+
+    if (item.type === 'image') {
+        state.imageRemainingTime = IMAGE_DURATION_MS;
+        state.imageStartTime = performance.now();
+    } else {
+        const playPromise = state.activeMedia.fg.play();
+        if (playPromise !== undefined) {
+            playPromise.catch(e => console.warn("Autoplay prevented:", e));
+        }
+        state.activeMedia.bg.play().catch(()=>{});
+    }
+
+    preloadNext();
+}
+
+function updateProgressUI(currentMediaProgress) {
+    for (let i = 0; i < state.feedLength; i++) {
+        const fill = state.progressFills[i];
+        if (i < state.currentIndex) {
+            fill.style.transform = `scaleX(1)`;
+        } else if (i > state.currentIndex) {
+            fill.style.transform = `scaleX(0)`;
+        } else {
+            fill.style.transform = `scaleX(${Math.min(Math.max(currentMediaProgress, 0), 1)})`;
+        }
+    }
+}
+
+function navigate(direction) {
+    state.currentIndex = (state.currentIndex + direction + state.feedLength) % state.feedLength;
+    mountActiveMedia();
+    if (state.isPaused) togglePlayPause(); 
+}
+
+function renderLoop() {
+    if (state.isPaused) {
+        state.rafId = requestAnimationFrame(renderLoop);
+        return;
+    }
+
+    const fg = state.activeMedia.fg;
+    let progress = 0;
+
+    if (fg) {
+        if (fg.tagName === 'IMG') {
+            const elapsed = performance.now() - state.imageStartTime;
+            progress = elapsed / IMAGE_DURATION_MS;
+            if (progress >= 1) {
+                navigate(1);
+                progress = 0;
+            }
+        } 
+        else if (fg.tagName === 'VIDEO') {
+            if (fg.duration) {
+                progress = fg.currentTime / fg.duration;
+                if (progress >= 1 || fg.ended) {
+                    navigate(1);
+                    progress = 0;
+                }
+            }
+        }
+    }
+
+    updateProgressUI(progress);
+    state.rafId = requestAnimationFrame(renderLoop);
+}
+
+function togglePlayPause() {
+    state.isPaused = !state.isPaused;
+    const fg = state.activeMedia.fg;
+    const bg = state.activeMedia.bg;
+
+    if (state.isPaused) {
+        dom.pauseIndicator.classList.add('visible');
+        if (fg && fg.tagName === 'VIDEO') {
+            fg.pause();
+            bg.pause();
+        } else if (fg && fg.tagName === 'IMG') {
+            const elapsed = performance.now() - state.imageStartTime;
+            state.imageRemainingTime = Math.max(0, IMAGE_DURATION_MS - elapsed);
+        }
+    } else {
+        dom.pauseIndicator.classList.remove('visible');
+        if (fg && fg.tagName === 'VIDEO') {
+            fg.play().catch(()=>{});
+            bg.play().catch(()=>{});
+        } else if (fg && fg.tagName === 'IMG') {
+            state.imageStartTime = performance.now() - (IMAGE_DURATION_MS - state.imageRemainingTime);
+        }
+    }
+}
+
+function toggleMute() {
+    state.globalMuted = !state.globalMuted;
+    
+    if (state.activeMedia.fg && state.activeMedia.fg.tagName === 'VIDEO') {
+        state.activeMedia.fg.muted = state.globalMuted;
+    }
+    
+    if (state.globalMuted) {
+        dom.muteBtn.classList.remove('hidden');
+    } else {
+        dom.muteBtn.classList.add('hidden');
+    }
+}
+
+/**
+ * NEW: Volume Control Handler
+ * Clamps volume between 0 and 1. Applies to the active foreground node if it's a video.
+ */
+function changeVolume(delta) {
+    state.volume = Math.max(0, Math.min(1, state.volume + delta));
+    if (state.activeMedia.fg && state.activeMedia.fg.tagName === 'VIDEO') {
+        state.activeMedia.fg.volume = state.volume;
+    }
+}
+
+/**
+ * NEW: Menu/UI Visibility Handler
+ * Toggles the opacity of non-essential overlay elements.
+ */
+function toggleUI() {
+    state.uiVisible = !state.uiVisible;
+    const opacity = state.uiVisible ? '1' : '0';
+    dom.progressUi.style.opacity = opacity;
+    dom.muteBtn.style.opacity = state.globalMuted ? opacity : '0'; // respect existing mute logic
+}
+
+
+// --- EVENT BINDINGS ---
+
+dom.zonePrev.addEventListener('mousedown', () => navigate(-1));
+dom.zoneNext.addEventListener('mousedown', () => navigate(1));
+
+dom.muteBtn.addEventListener('click', (e) => {
+    e.stopPropagation(); 
+    toggleMute();
+});
+
+/**
+ * NEW: Robust Keyboard Navigation Router
+ */
+window.addEventListener('keydown', (e) => {
+    // 1. Edge Case Protection: Do nothing if the user is typing in an input or textarea
+    const activeTag = document.activeElement ? document.activeElement.tagName : '';
+    const isContentEditable = document.activeElement ? document.activeElement.isContentEditable : false;
+    
+    if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || isContentEditable) {
+        return; 
+    }
+
+    // 2. Scroll Prevention: Stop standard browser behavior for navigational keys
+    const scrollingKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '];
+    if (scrollingKeys.includes(e.key)) {
+        e.preventDefault();
+    }
+
+    // 3. Command Router: Clean switch statement leveraging e.key
+    switch (e.key) {
+        case 'ArrowUp':
+            changeVolume(0.1); 
+            break;
+        case 'ArrowDown':
+            changeVolume(-0.1); 
+            break;
+        case 'ArrowRight':
+            navigate(1); 
+            break;
+        case 'ArrowLeft':
+            navigate(-1); 
+            break;
+        case 'Enter':
+            togglePlayPause(); 
+            break;
+        case ' ': // The Space character
+            toggleUI(); 
+            break;
+        case '#': // Natively captures Shift + 3 on standard QWERTY
+            toggleMute(); 
+            break;
+    }
+});
+
+// Boot Sequence
+function initApp() {
+    initProgressUI();
+    mountActiveMedia();
+    state.rafId = requestAnimationFrame(renderLoop);
+}
+
+// Start App
+initApp();
+
+</script>
+</body>
+</html>
