@@ -174,8 +174,8 @@ class StoryStreamer {
 
     const storiesQuery = query(
       collection(db, 'stories'),
-      where('patientId', '==', patientId),
-      orderBy('timestamp', 'asc')
+      where('patientId', '==', patientId)
+      // Removed orderBy('timestamp', 'asc') to avoid Firestore composite index requirement
     );
 
     onSnapshot(storiesQuery, (snapshot) => {
@@ -202,6 +202,13 @@ class StoryStreamer {
           senderName: data.senderName || '',
           timestamp: data.timestamp,
         });
+      });
+
+      // Sort stories client-side by timestamp
+      newFeed.sort((a, b) => {
+        const timeA = a.timestamp ? (a.timestamp.seconds || 0) : 0;
+        const timeB = b.timestamp ? (b.timestamp.seconds || 0) : 0;
+        return timeA - timeB;
       });
 
       console.log(`[StoryStreamer] Feed updated: ${newFeed.length} stories`);
