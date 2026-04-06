@@ -1,550 +1,139 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Enterprise Story Streamer</title>
-    <style>
-        /* * ARCHITECTURAL CSS MANDATES:
-         * 1. 100vh/100vw locking to prevent scroll jank.
-         * 2. `object-fit: cover` ensures strict aspect ratio adherence without distortion.
-         * 3. GPU compositing triggers (`will-change`, `transform`) on high-frequency update nodes.
-         */
-        
-        :root {
-            --story-aspect-ratio: 9 / 16;
-            --desktop-max-height: 95vh;
-            --ui-z-index: 100;
-        }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>Story Streamer — Immersive Media Experience</title>
+  <meta name="description" content="An immersive, Instagram-style story streaming experience with seamless video and image playback, blurred backdrop, and keyboard controls.">
 
-        body, html {
-            margin: 0;
-            padding: 0;
-            width: 100vw;
-            height: 100vh;
-            background-color: #000;
-            overflow: hidden;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            user-select: none;
-        }
+  <!-- Preconnect to Google Fonts for faster font loading -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 
-        /* Full viewport container */
-        #app-container {
-            position: relative;
-            width: 100%;
-            height: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        /* * DYNAMIC BLURRED BACKGROUND
-         * We scale it slightly (1.1) to prevent the blurred edges from leaking transparent pixels.
-         */
-        #bg-container {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            filter: blur(40px) brightness(0.3);
-            transform: scale(1.1);
-            z-index: 1;
-            pointer-events: none;
-        }
-
-        #bg-container video, 
-        #bg-container img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            position: absolute;
-            opacity: 0;
-            transition: opacity 0.3s ease;
-        }
-
-        /* CENTRAL MEDIA CONTAINER (9:16) */
-        #story-container {
-            position: relative;
-            height: var(--desktop-max-height);
-            aspect-ratio: var(--story-aspect-ratio);
-            background: #111;
-            border-radius: 12px;
-            overflow: hidden;
-            z-index: 10;
-            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
-        }
-
-        /* Holds the active/preloaded DOM nodes */
-        #media-layer {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-        }
-
-        #media-layer video, 
-        #media-layer img {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-            opacity: 0; /* Handled via JS */
-        }
-
-        /* PROGRESS BAR SYSTEM */
-        #progress-ui {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            padding: 12px 8px;
-            box-sizing: border-box;
-            display: flex;
-            gap: 4px;
-            z-index: var(--ui-z-index);
-            background: linear-gradient(to bottom, rgba(0,0,0,0.6) 0%, transparent 100%);
-            transition: opacity 0.3s ease; /* Added for menu toggling */
-        }
-
-        .progress-segment {
-            flex-grow: 1;
-            height: 3px;
-            background-color: rgba(255, 255, 255, 0.3);
-            border-radius: 2px;
-            overflow: hidden;
-            position: relative;
-        }
-
-        /* * GPU-ACCELERATED PROGRESS FILL
-         * Mandate: Animate using transform: scaleX(), NOT width. 
-         * Origin is left-center so it grows left-to-right.
-         */
-        .progress-fill {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background-color: #fff;
-            transform-origin: left center;
-            transform: scaleX(0);
-            will-change: transform;
-        }
-
-        /* INTERACTION & UI OVERLAYS */
-        #controls-layer {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            z-index: var(--ui-z-index);
-            display: flex;
-        }
-
-        .click-zone {
-            flex-grow: 1;
-            height: 100%;
-            cursor: pointer;
-        }
-
-        /* MUTE / UNMUTE BUTTON */
-        #mute-btn {
-            position: absolute;
-            top: 40px;
-            right: 16px;
-            background: rgba(0, 0, 0, 0.5);
-            color: white;
-            border: 1px solid rgba(255,255,255,0.2);
-            padding: 8px 16px;
-            border-radius: 20px;
-            font-size: 14px;
-            font-weight: 600;
-            cursor: pointer;
-            backdrop-filter: blur(10px);
-            z-index: calc(var(--ui-z-index) + 1);
-            animation: pulse 2s infinite;
-            transition: opacity 0.3s ease; /* Added for menu toggling */
-        }
-
-        #mute-btn.hidden {
-            display: none;
-        }
-
-        @keyframes pulse {
-            0% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.4); }
-            70% { box-shadow: 0 0 0 10px rgba(255, 255, 255, 0); }
-            100% { box-shadow: 0 0 0 0 rgba(255, 255, 255, 0); }
-        }
-
-        /* PAUSE INDICATOR */
-        #pause-indicator {
-            position: absolute;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            color: white;
-            font-size: 48px;
-            opacity: 0;
-            transition: opacity 0.2s;
-            pointer-events: none;
-            text-shadow: 0 2px 10px rgba(0,0,0,0.5);
-        }
-        #pause-indicator.visible {
-            opacity: 1;
-        }
-
-    </style>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
-<div id="app-container">
-    <div id="bg-container"></div>
+  <div id="app">
 
-    <div id="story-container">
-        <div id="progress-ui"></div>
-        
-        <div id="media-layer"></div>
-        
-        <div id="controls-layer">
-            <div class="click-zone" id="zone-prev"></div>
-            <div class="click-zone" id="zone-next"></div>
-        </div>
-
-        <button id="mute-btn">Tap to Unmute</button>
-        <div id="pause-indicator">⏸</div>
+    <!-- ── LAYER 1: Blurred Background ── -->
+    <div id="background-blur" aria-hidden="true">
+      <canvas id="blur-canvas" width="80" height="45"></canvas>
+      <div id="blur-image"></div>
+      <div id="blur-overlay"></div>
     </div>
-</div>
 
-<script>
-/**
- * ENTERPRISE STORY STREAMER - CORE LOGIC
- * Architecture: Vanilla JS, High-Perf Rendering, VRAM Management.
- */
+    <!-- ── IDLE SCREEN (shown when no stories) ── -->
+    <div id="idle-screen">
+      <div class="idle-content">
+        <div class="idle-pulse-ring">
+          <div class="idle-icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/>
+            </svg>
+          </div>
+        </div>
+        <h2 id="idle-patient-name">Waiting for stories...</h2>
+        <p id="idle-subtitle">Stories from family and friends will appear here automatically</p>
+        <div class="idle-dots">
+          <span></span><span></span><span></span>
+        </div>
+      </div>
+    </div>
 
-const MASTER_FEED = [
-  { type: "video", src: "https://www.w3schools.com/html/mov_bbb.mp4", duration: 10 },
-  { type: "image", src: "https://www.w3schools.com/w3images/fjords.jpg", duration: 5 },
-  { type: "video", src: "https://www.w3schools.com/html/movie.mp4", duration: 12 },
-  { type: "image", src: "https://www.w3schools.com/w3images/lights.jpg", duration: 5 }
-];
+    <!-- ── LAYER 2: Story Container (9:16 Aspect Ratio) ── -->
+    <div id="story-container" class="hidden-story">
 
-const IMAGE_DURATION_MS = 5000;
+      <!-- Segmented Progress Bar -->
+      <div id="progress-bar"></div>
 
-// Application State
-const state = {
-    currentIndex: 0,
-    isPaused: false,
-    globalMuted: true,
-    volume: 1.0,        // NEW: Volume tracking
-    uiVisible: true,    // NEW: UI/Menu visibility tracking
-    feedLength: MASTER_FEED.length,
-    
-    // RAF Loop Tracking
-    rafId: null,
-    imageStartTime: 0,
-    imageRemainingTime: IMAGE_DURATION_MS,
-    
-    // Virtualized DOM References
-    activeMedia: { fg: null, bg: null },
-    preloadMedia: { fg: null, bg: null },
-    
-    // UI References
-    progressFills: []
-};
+      <!-- Top Gradient Overlay -->
+      <div id="top-gradient" aria-hidden="true"></div>
 
-// DOM Node Caching
-const dom = {
-    bgLayer: document.getElementById('bg-container'),
-    mediaLayer: document.getElementById('media-layer'),
-    progressUi: document.getElementById('progress-ui'),
-    muteBtn: document.getElementById('mute-btn'),
-    pauseIndicator: document.getElementById('pause-indicator'),
-    zonePrev: document.getElementById('zone-prev'),
-    zoneNext: document.getElementById('zone-next')
-};
+      <!-- Media Viewport -->
+      <div id="media-viewport"></div>
 
-function nuclearGC(element) {
-    if (!element) return;
-    if (element.tagName === 'VIDEO') {
-        element.pause();
-        element.removeAttribute('src');
-        element.load();
-    }
-    element.remove();
-}
+      <!-- Caption & Sender Overlay -->
+      <div id="caption-overlay" aria-hidden="true">
+        <p id="caption-sender" class="caption-sender"></p>
+        <p id="caption-text" class="caption-text"></p>
+      </div>
 
-function createMediaNode(item, isBackground = false) {
-    const el = document.createElement(item.type === 'video' ? 'video' : 'img');
-    el.src = item.src;
-    el.style.opacity = '0';
-    
-    if (item.type === 'video') {
-        el.muted = true;
-        el.loop = false;
-        el.playsInline = true;
-        el.preload = "auto"; 
-    }
-    
-    if (isBackground) {
-        dom.bgLayer.appendChild(el);
-    } else {
-        dom.mediaLayer.appendChild(el);
-    }
-    
-    return el;
-}
+      <!-- Invisible Navigation Click Zones -->
+      <div id="nav-prev" class="nav-zone" aria-label="Previous story"></div>
+      <div id="nav-next" class="nav-zone" aria-label="Next story"></div>
 
-function initProgressUI() {
-    dom.progressUi.innerHTML = '';
-    state.progressFills = [];
-    
-    for (let i = 0; i < state.feedLength; i++) {
-        const segment = document.createElement('div');
-        segment.className = 'progress-segment';
-        const fill = document.createElement('div');
-        fill.className = 'progress-fill';
-        segment.appendChild(fill);
-        dom.progressUi.appendChild(segment);
-        state.progressFills.push(fill);
-    }
-}
+      <!-- Unmute Button -->
+      <button id="unmute-btn" aria-label="Unmute audio">
+        <span class="unmute-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <line x1="23" y1="9" x2="17" y2="15"></line>
+            <line x1="17" y1="9" x2="23" y2="15"></line>
+          </svg>
+        </span>
+        <span class="unmute-text">Tap to Unmute</span>
+      </button>
 
-function preloadNext() {
-    const nextIndex = (state.currentIndex + 1) % state.feedLength;
-    const nextItem = MASTER_FEED[nextIndex];
+      <!-- Pause Indicator -->
+      <div id="pause-indicator" aria-hidden="true">
+        <svg width="52" height="52" viewBox="0 0 48 48" fill="rgba(255,255,255,0.95)">
+          <rect x="14" y="12" width="7" height="24" rx="2"/>
+          <rect x="27" y="12" width="7" height="24" rx="2"/>
+        </svg>
+      </div>
 
-    nuclearGC(state.preloadMedia.fg);
-    nuclearGC(state.preloadMedia.bg);
+      <!-- Play Indicator -->
+      <div id="play-indicator" aria-hidden="true">
+        <svg width="52" height="52" viewBox="0 0 48 48" fill="rgba(255,255,255,0.95)">
+          <polygon points="16,10 40,24 16,38"/>
+        </svg>
+      </div>
 
-    state.preloadMedia.fg = createMediaNode(nextItem, false);
-    state.preloadMedia.bg = createMediaNode(nextItem, true);
-}
+      <!-- Volume Indicator -->
+      <div id="volume-indicator" aria-hidden="true">
+        <div id="volume-icon">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+            <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+            <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+          </svg>
+        </div>
+        <div id="volume-bar-track">
+          <div id="volume-bar-fill"></div>
+        </div>
+        <span id="volume-label">100%</span>
+      </div>
 
-function mountActiveMedia() {
-    nuclearGC(state.activeMedia.fg);
-    nuclearGC(state.activeMedia.bg);
+      <!-- Menu Overlay -->
+      <div id="menu-overlay">
+        <div class="menu-content">
+          <h2>Keyboard Shortcuts</h2>
+          <div class="shortcut-grid">
+            <div class="shortcut-row"><kbd>←</kbd><span>Previous Story</span></div>
+            <div class="shortcut-row"><kbd>→</kbd><span>Next Story</span></div>
+            <div class="shortcut-row"><kbd>↑</kbd><span>Volume Up</span></div>
+            <div class="shortcut-row"><kbd>↓</kbd><span>Volume Down</span></div>
+            <div class="shortcut-row"><kbd>Space</kbd><span>Play / Pause</span></div>
+            <div class="shortcut-row"><kbd>M</kbd> / <kbd>#</kbd><span>Mute / Unmute</span></div>
+            <div class="shortcut-row"><kbd>Enter</kbd><span>Toggle This Menu</span></div>
+          </div>
+          <p class="menu-hint">Press <kbd>Enter</kbd> to close</p>
+        </div>
+      </div>
 
-    const item = MASTER_FEED[state.currentIndex];
+      <!-- Bottom Gradient Overlay -->
+      <div id="bottom-gradient" aria-hidden="true"></div>
 
-    if (state.preloadMedia.fg && state.preloadMedia.fg.src === item.src) {
-        state.activeMedia.fg = state.preloadMedia.fg;
-        state.activeMedia.bg = state.preloadMedia.bg;
-        state.preloadMedia.fg = null; 
-        state.preloadMedia.bg = null;
-    } else {
-        state.activeMedia.fg = createMediaNode(item, false);
-        state.activeMedia.bg = createMediaNode(item, true);
-    }
+    </div><!-- /#story-container -->
 
-    if (item.type === 'video') {
-        state.activeMedia.fg.muted = state.globalMuted;
-        state.activeMedia.fg.volume = state.volume; // NEW: Apply current volume state
-        state.activeMedia.bg.muted = true;
-    }
+    <!-- Story Counter -->
+    <div id="story-counter" aria-live="polite"></div>
 
-    state.activeMedia.fg.style.opacity = '1';
-    state.activeMedia.bg.style.opacity = '1';
+  </div><!-- /#app -->
 
-    if (item.type === 'image') {
-        state.imageRemainingTime = IMAGE_DURATION_MS;
-        state.imageStartTime = performance.now();
-    } else {
-        const playPromise = state.activeMedia.fg.play();
-        if (playPromise !== undefined) {
-            playPromise.catch(e => console.warn("Autoplay prevented:", e));
-        }
-        state.activeMedia.bg.play().catch(()=>{});
-    }
-
-    preloadNext();
-}
-
-function updateProgressUI(currentMediaProgress) {
-    for (let i = 0; i < state.feedLength; i++) {
-        const fill = state.progressFills[i];
-        if (i < state.currentIndex) {
-            fill.style.transform = `scaleX(1)`;
-        } else if (i > state.currentIndex) {
-            fill.style.transform = `scaleX(0)`;
-        } else {
-            fill.style.transform = `scaleX(${Math.min(Math.max(currentMediaProgress, 0), 1)})`;
-        }
-    }
-}
-
-function navigate(direction) {
-    state.currentIndex = (state.currentIndex + direction + state.feedLength) % state.feedLength;
-    mountActiveMedia();
-    if (state.isPaused) togglePlayPause(); 
-}
-
-function renderLoop() {
-    if (state.isPaused) {
-        state.rafId = requestAnimationFrame(renderLoop);
-        return;
-    }
-
-    const fg = state.activeMedia.fg;
-    let progress = 0;
-
-    if (fg) {
-        if (fg.tagName === 'IMG') {
-            const elapsed = performance.now() - state.imageStartTime;
-            progress = elapsed / IMAGE_DURATION_MS;
-            if (progress >= 1) {
-                navigate(1);
-                progress = 0;
-            }
-        } 
-        else if (fg.tagName === 'VIDEO') {
-            if (fg.duration) {
-                progress = fg.currentTime / fg.duration;
-                if (progress >= 1 || fg.ended) {
-                    navigate(1);
-                    progress = 0;
-                }
-            }
-        }
-    }
-
-    updateProgressUI(progress);
-    state.rafId = requestAnimationFrame(renderLoop);
-}
-
-function togglePlayPause() {
-    state.isPaused = !state.isPaused;
-    const fg = state.activeMedia.fg;
-    const bg = state.activeMedia.bg;
-
-    if (state.isPaused) {
-        dom.pauseIndicator.classList.add('visible');
-        if (fg && fg.tagName === 'VIDEO') {
-            fg.pause();
-            bg.pause();
-        } else if (fg && fg.tagName === 'IMG') {
-            const elapsed = performance.now() - state.imageStartTime;
-            state.imageRemainingTime = Math.max(0, IMAGE_DURATION_MS - elapsed);
-        }
-    } else {
-        dom.pauseIndicator.classList.remove('visible');
-        if (fg && fg.tagName === 'VIDEO') {
-            fg.play().catch(()=>{});
-            bg.play().catch(()=>{});
-        } else if (fg && fg.tagName === 'IMG') {
-            state.imageStartTime = performance.now() - (IMAGE_DURATION_MS - state.imageRemainingTime);
-        }
-    }
-}
-
-function toggleMute() {
-    state.globalMuted = !state.globalMuted;
-    
-    if (state.activeMedia.fg && state.activeMedia.fg.tagName === 'VIDEO') {
-        state.activeMedia.fg.muted = state.globalMuted;
-    }
-    
-    if (state.globalMuted) {
-        dom.muteBtn.classList.remove('hidden');
-    } else {
-        dom.muteBtn.classList.add('hidden');
-    }
-}
-
-/**
- * NEW: Volume Control Handler
- * Clamps volume between 0 and 1. Applies to the active foreground node if it's a video.
- */
-function changeVolume(delta) {
-    state.volume = Math.max(0, Math.min(1, state.volume + delta));
-    if (state.activeMedia.fg && state.activeMedia.fg.tagName === 'VIDEO') {
-        state.activeMedia.fg.volume = state.volume;
-    }
-}
-
-/**
- * NEW: Menu/UI Visibility Handler
- * Toggles the opacity of non-essential overlay elements.
- */
-function toggleUI() {
-    state.uiVisible = !state.uiVisible;
-    const opacity = state.uiVisible ? '1' : '0';
-    dom.progressUi.style.opacity = opacity;
-    dom.muteBtn.style.opacity = state.globalMuted ? opacity : '0'; // respect existing mute logic
-}
-
-
-// --- EVENT BINDINGS ---
-
-dom.zonePrev.addEventListener('mousedown', () => navigate(-1));
-dom.zoneNext.addEventListener('mousedown', () => navigate(1));
-
-dom.muteBtn.addEventListener('click', (e) => {
-    e.stopPropagation(); 
-    toggleMute();
-});
-
-/**
- * NEW: Robust Keyboard Navigation Router
- */
-window.addEventListener('keydown', (e) => {
-    // 1. Edge Case Protection: Do nothing if the user is typing in an input or textarea
-    const activeTag = document.activeElement ? document.activeElement.tagName : '';
-    const isContentEditable = document.activeElement ? document.activeElement.isContentEditable : false;
-    
-    if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || isContentEditable) {
-        return; 
-    }
-
-    // 2. Scroll Prevention: Stop standard browser behavior for navigational keys
-    const scrollingKeys = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', ' '];
-    if (scrollingKeys.includes(e.key)) {
-        e.preventDefault();
-    }
-
-    // 3. Command Router: Clean switch statement leveraging e.key
-    switch (e.key) {
-        case 'ArrowUp':
-            changeVolume(0.1); 
-            break;
-        case 'ArrowDown':
-            changeVolume(-0.1); 
-            break;
-        case 'ArrowRight':
-            navigate(1); 
-            break;
-        case 'ArrowLeft':
-            navigate(-1); 
-            break;
-        case 'Enter':
-            togglePlayPause(); 
-            break;
-        case ' ': // The Space character
-            toggleUI(); 
-            break;
-        case '*': // The * character
-            toggleUI(); 
-            break;
-        case '#': // Natively captures Shift + 3 on standard QWERTY
-            toggleMute(); 
-            break;
-    }
-});
-
-// Boot Sequence
-function initApp() {
-    initProgressUI();
-    mountActiveMedia();
-    state.rafId = requestAnimationFrame(renderLoop);
-}
-
-// Start App
-initApp();
-
-</script>
+  <!-- Firebase SDK loaded as module for the app script -->
+  <script type="module" src="app.js"></script>
 </body>
 </html>
